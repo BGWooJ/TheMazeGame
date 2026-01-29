@@ -1,0 +1,240 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Minimalist Maze: Glow & Physics (Web)</title>
+  <style>
+    :root{
+      --bg:#0E0F12; --wall:#1A1A1A; --ball:#2FD0FF; --spark:#FF7A00; --text:#D7DBE0;
+    }
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}
+    #hud{
+      position:fixed;top:10px;left:10px;display:flex;gap:12px;align-items:center;z-index:10;
+      background:#101217cc;border:1px solid #1f232b;border-radius:8px;padding:8px 10px;backdrop-filter:blur(4px);
+    }
+    #hud .btn{cursor:pointer;border:1px solid #2b313b;background:#12161b;color:var(--text);padding:6px 10px;border-radius:6px}
+    #hud .btn:hover{background:#171c22}
+    #hud label{display:flex;align-items:center;gap:6px;cursor:pointer}
+    #levels{
+      position:fixed;top:10px;right:10px;z-index:10;background:#101217cc;border:1px solid #1f232b;border-radius:8px;padding:8px 10px;
+      display:flex;gap:8px;align-items:center;backdrop-filter:blur(4px);
+    }
+    #levels .lvl{width:28px;height:28px;border-radius:6px;display:grid;place-items:center;border:1px solid #2b313b;background:#12161b;color:#9aa3af;cursor:pointer}
+    #levels .lvl.active{color:#fff;border-color:#4b5563;background:#18202a}
+    #gamewrap{position:relative;width:100vw;height:100vh;overflow:hidden}
+    canvas{position:absolute;inset:0}
+    #overlayMsg{
+      position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:28px;pointer-events:none;opacity:0;transition:opacity .25s;
+    }
+    #overlayMsg.show{opacity:1}
+    a{color:#9bd5ff;text-decoration:none}
+  </style>
+</head>
+<body>
+  <div id="gamewrap">
+    <canvas id="render"></canvas>
+    <canvas id="fx"></canvas>
+    <div id="overlayMsg"></div>
+  </div>
+
+  <div id="hud">
+    <div id="timer">⏱ 180</div>
+    <div id="levelLabel">Level 1/5 ▢</div>
+    <button class="btn" id="restart">Restart</button>
+    <label><input type="checkbox" id="glowToggle" checked/> Glow</label>
+    <label><input type="checkbox" id="audioToggle"/> Audio</label>
+  </div>
+
+  <div id="levels"></div>
+
+  <!-- Matter.js physics (CDN) -->
+  <script src="https://unpkg.com/matter-js@0.19.0/build/matter.min.js"></script>
+) => {
+    const {Engine, Render, Runner, Bodies, Composite, Events, Body, Vector, Mouse, MouseConstraint} = Matter;
+
+    // ---- Config ----
+    const SESSION_LEVELS = 5;
+    const MAZE_TIME = 180; // seconds per level
+    const WORLD_W = 880, WORLD_H = 640;            // logical world size
+    const WALL_THICK = 18;                          // collider thickness
+    const BALL_R = 14;                              // ball radius
+    const MAX_SPEED = 9.0;                          // drag-assist cap
+    const DRAG_ACCEL = 0.0028;                      // how strongly drag pulls
+    const DAMPING = 0.03;                           // post-drag velocity damping
+    const RESTITUTION = 0.55;                       // bounciness
+    const FRICTION_AIR = 0.015;                     // air friction
+
+    // ---- State ----
+    let engine, render, runner, worldBounds;
+    let ball, goalSensor, walls = [];
+    let currentLevelIdx = 0;
+    const levelSeeds = [];
+    const levelShapes = []; // 'square' or 'circle'
+    let timeLeft = MAZE_TIME;
+    let dragging = false, mousePos = {x: WORLD_W*0.5, y: WORLD_H*0.8};
+    let glowEnabled = true, audioEnabled = false;
+    const fxCanvas = document.getElementById('fx'), fxCtx = fxCanvas.getContext('2d');
+    const renderCanvas = document.getElementById('render');
+    const overlayMsg = document.getElementById('overlayMsg');
+
+    // ---- UI elements ----
+    const timerEl = document.getElementById('timer');
+    const levelLabel = document.getElementById('levelLabel');
+    const restartBtn = document.getElementById('restart');
+    const glowToggle = document.getElementById('glowToggle');
+    const audioToggle = document.getElementById('audioToggle');
+    const levelsBar = document.getElementById('levels');
+
+    glowToggle.addEventListener('change', e => glowEnabled = e.target.checked);
+    audioToggle.addEventListener('change', e => audioEnabled = e.target.checked);
+
+    // ---- Audio (optional) ----
+    let audioCtx;
+    function ping(freq=420, dur=0.08, gain=0.03){
+      if(!audioEnabled) return;
+      audioCtx ||= new (window.AudioContext||window.webkitAudioContext)();
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = freq; o.type = 'sine';
+      g.gain.value = gain; o.connect(g); g.connect(audioCtx.destination);
+      o.start(); o.stop(audioCtx.currentTime + dur);
+    }
+
+    // ---- Resize ----
+    function fitCanvases(){
+      const w = window.innerWidth, h = window.innerHeight;
+      renderCanvas.width = w; renderCanvas.height = h;
+      fxCanvas.width = w; fxCanvas.height = h;
+      worldBounds = {w: WORLD_W, h: WORLD_H};
+    }
+    window.addEventListener('resize', fitCanvases);
+
+    // ---- Random / Seeds ----
+    function mulberry32(a){return function(){let t=a+=0x6D2B79F5;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296;}}
+    function seededRng(seed){return mulberry32(seed);}
+
+    // ---- Maze Generation: Square (recursive backtracker) ----
+    function genSquareMaze(seed, cols=17, rows=13){
+      const rand = seededRng(seed);
+      const grid = Array.from({length: rows}, (_,y) =>
+        Array.from({length: cols}, (_,x) => ({x,y,visited:false,walls:[true,true,true,true]}))); // top,right,bottom,left
+      const stack = [];
+      function neighbors(cell){
+        const n=[];
+        const {x,y}=cell;
+        if(y>0) n.push({dir:0, c:grid[y-1][x]});         // top
+        if(x<cols-1) n.push({dir:1, c:grid[y][x+1]});     // right
+        if(y<rows-1) n.push({dir:2, c:grid[y+1][x]});     // bottom
+        if(x>0) n.push({dir:3, c:grid[y][x-1]});          // left
+        // shuffle
+        for(let i=n.length-1;i>0;i--){const j=Math.floor(rand()* (i+1));[n[i],n[j]]=[n[j],n[i]];}
+        return n;
+      }
+      const start = grid[0][0]; start.visited=true; stack.push(start);
+      while(stack.length){
+        const cur = stack[stack.length-1];
+        const nbs = neighbors(cur).filter(n=>!n.c.visited);
+        if(nbs.length){
+          const {dir,c} = nbs[0];
+          cur.walls[dir]=false; c.visited=true;
+          // opposite wall
+          c.walls[(dir+2)%4]=false;
+          stack.push(c);
+        } else {
+          stack.pop();
+        }
+      }
+      // Convert to wall segments
+      const cellW = WORLD_W/cols, cellH = WORLD_H/rows;
+      const segments=[];
+      for(let y=0;y<rows;y++){
+        for(let x=0;x<cols;x++){
+          const c=grid[y][x];
+          const cx=x*cellW, cy=y*cellH;
+          if(c.walls[0]) segments.push({x:cx+cellW/2, y:cy, w:cellW, h:WALL_THICK});               // top
+          if(c.walls[1]) segments.push({x:cx+cellW, y:cy+cellH/2, w:WALL_THICK, h:cellH});         // right
+          if(c.walls[2]) segments.push({x:cx+cellW/2, y:cy+cellH, w:cellW, h:WALL_THICK});         // bottom
+          if(c.walls[3]) segments.push({x:cx, y:cy+cellH/2, w:WALL_THICK, h:cellH});               // left
+        }
+      }
+      // ensure start gap bottom-left and goal gap near center
+      return {segments, start:{x:cellW*0.5, y:cellH*0.5}, goal:{x:WORLD_W*0.5, y:WORLD_H*0.5}};
+    }
+
+    // ---- Maze Generation: Circular (polar grid, DFS; approximated arcs via small segments) ----
+    function genCircularMaze(seed, rings=8, sectors=20){
+      const rand = seededRng(seed);
+      const grid = Array.from({length:rings}, () =>
+        Array.from({length:sectors}, ()=>({visited:false,walls:{radial:true,angular:true}})));
+      const stack=[];
+      const start = {r:rings-1, s:Math.floor(rand()*sectors)}; grid[start.r][start.s].visited=true; stack.push(start);
+      function neighbors(node){
+        const out=[];
+        const {r,s}=node;
+        if(r>0) out.push({dir:'in', n:{r:r-1, s:s}});           // radial inward
+        if(r<rings-1) out.push({dir:'out', n:{r:r+1, s:s}});    // radial outward
+        out.push({dir:'cw', n:{r, s:(s+1)%sectors}});           // angular cw
+        out.push({dir:'ccw', n:{r, s:(s-1+sectors)%sectors}});  // angular ccw
+        for(let i=out.length-1;i>0;i--){const j=Math.floor(rand()* (i+1));[out[i],out[j]]=[out[j],out[i]];}
+        return out.filter(o=>!grid[o.n.r][o.n.s].visited);
+      }
+      while(stack.length){
+        const cur = stack[stack.length-1];
+        const nbs = neighbors(cur);
+        if(nbs.length){
+          const o=nbs[0], next=o.n; grid[next.r][next.s].visited=true;
+          // knock down walls
+          if(o.dir==='in'){grid[cur.r][cur.s].walls.radial=false;}
+          if(o.dir==='out'){grid[next.r][next.s].walls.radial=false;}
+          if(o.dir==='cw'){grid[next.r][next.s].walls.angular=false;}
+          if(o.dir==='ccw'){grid[cur.r][cur.s].walls.angular=false;}
+          stack.push(next);
+        } else stack.pop();
+      }
+      // Build segments approximating arcs with many short lines
+      const cx=WORLD_W/2, cy=WORLD_H/2;
+      const maxR=Math.min(WORLD_W,WORLD_H)*0.45;
+      const ringW = maxR/rings;
+      const segments=[];
+      const arcSegLen = 12; // pixels
+      for(let r=0;r<rings;r++){
+        for(let s=0;s<sectors;s++){
+          const cell = grid[r][s];
+          // radial wall between ring r and r+1
+          if(cell.walls.radial){
+            const r0 = r*ringW, r1=(r+1)*ringW;
+            const a0 = (s/sectors)*Math.PI*2, a1 = ((s+1)/sectors)*Math.PI*2;
+            // use two short rectangles to approximate radial wall at sector boundary
+            const midA = a0;
+            const x0 = cx + Math.cos(midA)*r0, y0= cy + Math.sin(midA)*r0;
+            const x1 = cx + Math.cos(midA)*r1, y1= cy + Math.sin(midA)*r1;
+            const dx=x1-x0, dy=y1-y0, len=Math.hypot(dx,dy);
+            segments.push({x:(x0+x1)/2, y:(y0+y1)/2, w:WALL_THICK, h:len, angle:Math.atan2(dy,dx)});
+          }
+          // angular wall along the ring
+          if(cell.walls.angular){
+            const rmid=r1=(r+1)*ringW; // approximate at outer edge
+            const a0=(s/sectors)*Math.PI*2, a1=((s+1)/sectors)*Math.PI*2;
+            const arcLen = rmid*(a1-a0); const pieces=Math.max(1, Math.floor(arcLen/arcSegLen));
+            for(let i=0;i<pieces;i++){
+              const t0=a0 + (i/pieces)*(a1-a0), t1=a0 + ((i+1)/pieces)*(a1-a0);
+              const x0=cx+Math.cos(t0)*rmid, y0=cy+Math.sin(t0)*rmid;
+              const x1=cx+Math.cos(t1)*rmid, y1=cy+Math.sin(t1)*rmid;
+              const dx=x1-x0, dy=y1-y0, len=Math.hypot(dx,dy), ang=Math.atan2(dy,dx);
+              segments.push({x:(x0+x1)/2, y:(y0+y1)/2, w:len, h:WALL_THICK, angle:ang});
+            }
+          }
+        }
+      }
+      const startPos = {x: cx + Math.cos((start.s/sectors)*Math.PI*2)* (maxR-20), y: cy + Math.sin((start.s/sectors)*Math.PI*2)* (maxR-20)};
+      const goalPos = {x:cx, y:cy};
+      return {segments, start:startPos, goal:goalPos};
+    }
+
+    // ---- Build world ----
+    function initWorld(){
+      fitCanvases();
+      engine = Engine.create();
+      engine.world.gravity.y = 0;
+
