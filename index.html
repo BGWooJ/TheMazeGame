@@ -1,387 +1,272 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Minimalist Maze: Glow & Physics (Web)</title>
-  <style>
-    :root{ --bg:#0E0F12; --wall:#1A1A1A; --ball:#2FD0FF; --spark:#FF7A00; --text:#D7DBE0; }
-    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}
-    #hud{position:fixed;top:10px;left:10px;display:flex;gap:12px;align-items:center;z-index:10;background:#101217cc;border:1px solid #1f232b;border-radius:8px;padding:8px 10px;backdrop-filter:blur(4px);}
-    #hud .btn{cursor:pointer;border:1px solid #2b313b;background:#12161b;color:var(--text);padding:6px 10px;border-radius:6px}
-    #hud .btn:hover{background:#171c22}
-    #hud label{display:flex;align-items:center;gap:6px;cursor:pointer}
-    #levels{position:fixed;top:10px;right:10px;z-index:10;background:#101217cc;border:1px solid #1f232b;border-radius:8px;padding:8px 10px;display:flex;gap:8px;align-items:center;backdrop-filter:blur(4px);}
-    #levels .lvl{width:28px;height:28px;border-radius:6px;display:grid;place-items:center;border:1px solid #2b313b;background:#12161b;color:#9aa3af;cursor:pointer}
-    #levels .lvl.active{color:#fff;border-color:#4b5563;background:#18202a}
-    #gamewrap{position:relative;width:100vw;height:100vh;overflow:hidden}
-    canvas{position:absolute;inset:0}
-    #overlayMsg{position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:28px;pointer-events:none;opacity:0;transition:opacity .25s;}
-    #overlayMsg.show{opacity:1}
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Minimalist Maze: Kinetic Pro</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <style>
+        body { margin: 0; background: #0E0F12; overflow: hidden; font-family: 'Inter', sans-serif; touch-action: none; }
+        canvas { display: block; position: absolute; top: 0; left: 0; z-index: 10; }
+        
+        #parallax-container {
+            position: absolute; width: 100vw; height: 100vh;
+            perspective: 1000px; overflow: hidden; z-index: 1;
+        }
+
+        #bg-grid {
+            position: absolute; width: 200%; height: 200%; top: -50%; left: -50%;
+            background-image: 
+                linear-gradient(rgba(47, 208, 255, 0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(47, 208, 255, 0.05) 1px, transparent 1px);
+            background-size: 80px 80px;
+            z-index: 1; pointer-events: none;
+        }
+
+        #ui {
+            position: absolute; top: 40px; left: 40px; color: #2FD0FF;
+            z-index: 20; pointer-events: none; text-transform: uppercase; letter-spacing: 4px;
+            font-size: 14px; font-weight: 900; transition: opacity 0.5s;
+        }
+        
+        #lvl-val { font-size: 32px; display: block; text-shadow: 0 0 20px rgba(47, 208, 205, 0.8); }
+
+        .controls {
+            position: absolute; bottom: 40px; left: 50%; transform: translateX(-50%);
+            z-index: 20; display: flex; gap: 20px;
+        }
+
+        button {
+            background: rgba(0, 0, 0, 0.5); border: 1px solid #2FD0FF;
+            color: #2FD0FF; padding: 12px 28px; cursor: pointer; transition: 0.3s;
+            font-size: 10px; letter-spacing: 2px; text-transform: uppercase; border-radius: 4px;
+            backdrop-filter: blur(5px);
+        }
+
+        button:hover { background: #2FD0FF; color: #000; box-shadow: 0 0 20px #2FD0FF; }
+    </style>
 </head>
 <body>
-  <div id="gamewrap">
-    <canvas id="render"></canvas>
-    <canvas id="fx"></canvas>
-    <div id="overlayMsg"></div>
-  </div>
 
-  <div id="hud">
-    <div id="timer">⏱ 180</div>
-    <div id="levelLabel">Level 1/5 ▢</div>
-    <button class="btn" id="restart">Restart</button>
-    <label><input type="checkbox" id="glowToggle" checked/> Glow</label>
-    <label><input type="checkbox" id="audioToggle"/> Audio</label>
-  </div>
+    <div id="parallax-container">
+        <div id="bg-grid"></div>
+    </div>
 
-  <div id="levels"></div>
+    <div id="ui">
+        Level <span id="lvl-val">01</span>
+    </div>
 
-  <!-- Matter.js physics (CDN) — CORRECT TAG -->
-  https://unpkg.com/matter-js@0.19.0/build/matter.min.js</script>
+    <div class="controls">
+        <button onclick="toggleShape()">Toggle Shape</button>
+        <button onclick="generateMaze()">New Seed</button>
+    </div>
 
-  <script>
-  (() => {
-    const {Engine, Render, Runner, Bodies, Composite, Events, Body, Vector, Mouse, MouseConstraint} = Matter;
+<script>
+const COLORS = { ball: '#2FD0FF', goal: '#FF7A00', wall: '#1A1A1A', bg: '#0E0F12', spark: '#FF7A00' };
+const { Engine, Render, Runner, World, Bodies, Body, Composite, Events, Vector } = Matter;
 
-    // ---- Config ----
-    const SESSION_LEVELS = 5;
-    const MAZE_TIME = 180;             // seconds per level
-    const WORLD_W = 880, WORLD_H = 640;
-    const WALL_THICK = 18;
-    const BALL_R = 14;
-    const MAX_SPEED = 9.0;
-    const DRAG_ACCEL = 0.0028;
-    const DAMPING = 0.03;
-    const RESTITUTION = 0.55;
-    const FRICTION_AIR = 0.015;
+let engine, render, runner, mazeGroup, ball, goal;
+let isDragging = false, mousePos = { x: 0, y: 0 };
+let particles = [], flashes = [];
+let shakeIntensity = 0;
+let currentShape = 'circular';
+let mazeRotationSpeed = 0.003;
 
-    // ---- State ----
-    let engine, render, runner;
-    let ball, goalSensor, walls = [];
-    let currentLevelIdx = 0;
-    const levelSeeds = [];
-    const levelShapes = [];
-    let timeLeft = MAZE_TIME;
-    let dragging = false, mousePos = {x: WORLD_W*0.5, y: WORLD_H*0.8};
-    let glowEnabled = true, audioEnabled = false;
-
-    const fxCanvas = document.getElementById('fx'), fxCtx = fxCanvas.getContext('2d');
-    const renderCanvas = document.getElementById('render');
-    const overlayMsg = document.getElementById('overlayMsg');
-    const timerEl = document.getElementById('timer');
-    const levelLabel = document.getElementById('levelLabel');
-    const restartBtn = document.getElementById('restart');
-    const glowToggle = document.getElementById('glowToggle');
-    const audioToggle = document.getElementById('audioToggle');
-    const levelsBar = document.getElementById('levels');
-
-    glowToggle.addEventListener('change', e => glowEnabled = e.target.checked);
-    audioToggle.addEventListener('change', e => audioEnabled = e.target.checked);
-
-    // ---- Audio (optional) ----
-    let audioCtx;
-    function ping(freq=420, dur=0.08, gain=0.03){
-      if(!audioEnabled) return;
-      audioCtx ||= new (window.AudioContext||window.webkitAudioContext)();
-      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-      o.frequency.value = freq; o.type = 'sine';
-      g.gain.value = gain; o.connect(g); g.connect(audioCtx.destination);
-      o.start(); o.stop(audioCtx.currentTime + dur);
-    }
-
-    // ---- Resize ----
-    function fitCanvases(){
-      const w = window.innerWidth, h = window.innerHeight;
-      renderCanvas.width = w; renderCanvas.height = h;
-      fxCanvas.width = w; fxCanvas.height = h;
-    }
-    window.addEventListener('resize', fitCanvases);
-
-    // ---- RNG ----
-    function mulberry32(a){return function(){let t=a+=0x6D2B79F5;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296;}}
-    function seededRng(seed){return mulberry32(seed);}
-
-    // ---- Square maze ----
-    function genSquareMaze(seed, cols=17, rows=13){
-      const rand = seededRng(seed);
-      const grid = Array.from({length: rows}, (_,y) =>
-        Array.from({length: cols}, (_,x) => ({x,y,visited:false,walls:[true,true,true,true]})));
-      const stack = [];
-      function neighbors(cell){
-        const n=[]; const {x,y}=cell;
-        if(y>0) n.push({dir:0, c:grid[y-1][x]});
-        if(x<cols-1) n.push({dir:1, c:grid[y][x+1]});
-        if(y<rows-1) n.push({dir:2, c:grid[y+1][x]});
-        if(x>0) n.push({dir:3, c:grid[y][x-1]});
-        for(let i=n.length-1;i>0;i--){const j=Math.floor(rand()* (i+1));[n[i],n[j]]=[n[j],n[i]];}
-        return n;
-      }
-      const start = grid[0][0]; start.visited=true; stack.push(start);
-      while(stack.length){
-        const cur = stack[stack.length-1];
-        const nbs = neighbors(cur).filter(n=>!n.c.visited);
-        if(nbs.length){
-          const {dir,c} = nbs[0];
-          cur.walls[dir]=false; c.visited=true;
-          c.walls[(dir+2)%4]=false;
-          stack.push(c);
-        } else stack.pop();
-      }
-      const cellW = WORLD_W/cols, cellH = WORLD_H/rows;
-      const segments=[];
-      for(let y=0;y<rows;y++){
-        for(let x=0;x<cols;x++){
-          const c=grid[y][x];
-          const cx=x*cellW, cy=y*cellH;
-          if(c.walls[0]) segments.push({x:cx+cellW/2, y:cy, w:cellW, h:WALL_THICK});
-          if(c.walls[1]) segments.push({x:cx+cellW, y:cy+cellH/2, w:WALL_THICK, h:cellH});
-          if(c.walls[2]) segments.push({x:cx+cellW/2, y:cy+cellH, w:cellW, h:WALL_THICK});
-          if(c.walls[3]) segments.push({x:cx, y:cy+cellH/2, w:WALL_THICK, h:cellH});
+function init() {
+    engine = Engine.create({ gravity: { x: 0, y: 0 } });
+    render = Render.create({
+        element: document.body,
+        engine: engine,
+        options: {
+            width: window.innerWidth, height: window.innerHeight,
+            wireframes: false, background: 'transparent', pixelRatio: window.devicePixelRatio
         }
-      }
-      return {segments, start:{x:cellW*0.5, y:cellH*0.5}, goal:{x:WORLD_W*0.5, y:WORLD_H*0.5}};
-    }
-
-    // ---- Circular maze ----
-    function genCircularMaze(seed, rings=8, sectors=20){
-      const rand = seededRng(seed);
-      const grid = Array.from({length:rings}, () =>
-        Array.from({length:sectors}, ()=>({visited:false,walls:{radial:true,angular:true}})));
-      const stack=[];
-      const start = {r:rings-1, s:Math.floor(rand()*sectors)}; grid[start.r][start.s].visited=true; stack.push(start);
-      function neighbors(node){
-        const out=[]; const {r,s}=node;
-        if(r>0) out.push({dir:'in', n:{r:r-1, s:s}});
-        if(r<rings-1) out.push({dir:'out', n:{r:r+1, s:s}});
-        out.push({dir:'cw', n:{r, s:(s+1)%sectors}});
-        out.push({dir:'ccw', n:{r, s:(s-1+sectors)%sectors}});
-        for(let i=out.length-1;i>0;i--){const j=Math.floor(rand()* (i+1));[out[i],out[j]]=[out[j],out[i]];}
-        return out.filter(o=>!grid[o.n.r][o.n.s].visited);
-      }
-      while(stack.length){
-        const cur = stack[stack.length-1];
-        const nbs = neighbors(cur);
-        if(nbs.length){
-          const o=nbs[0], next=o.n; grid[next.r][next.s].visited=true;
-          if(o.dir==='in'){grid[cur.r][cur.s].walls.radial=false;}
-          if(o.dir==='out'){grid[next.r][next.s].walls.radial=false;}
-          if(o.dir==='cw'){grid[next.r][next.s].walls.angular=false;}
-          if(o.dir==='ccw'){grid[cur.r][cur.s].walls.angular=false;}
-          stack.push(next);
-        } else stack.pop();
-      }
-      const cx=WORLD_W/2, cy=WORLD_H/2;
-      const maxR=Math.min(WORLD_W,WORLD_H)*0.45;
-      const ringW = maxR/rings;
-      const segments=[];
-      const arcSegLen = 12;
-      for(let r=0;r<rings;r++){
-        for(let s=0;s<sectors;s++){
-          const cell = grid[r][s];
-          if(cell.walls.radial){
-            const r0 = r*ringW, r1=(r+1)*ringW;
-            const a0 = (s/sectors)*Math.PI*2;
-            const x0 = cx + Math.cos(a0)*r0, y0= cy + Math.sin(a0)*r0;
-            const x1 = cx + Math.cos(a0)*r1, y1= cy + Math.sin(a0)*r1;
-            const dx=x1-x0, dy=y1-y0, len=Math.hypot(dx,dy);
-            segments.push({x:(x0+x1)/2, y:(y0+y1)/2, w:WALL_THICK, h:len, angle:Math.atan2(dy,dx)});
-          }
-          if(cell.walls.angular){
-            const rmid=(r+1)*ringW;
-            const a0=(s/sectors)*Math.PI*2, a1=((s+1)/sectors)*Math.PI*2;
-            const arcLen = rmid*(a1-a0); const pieces=Math.max(1, Math.floor(arcLen/arcSegLen));
-            for(let i=0;i<pieces;i++){
-              const t0=a0 + (i/pieces)*(a1-a0), t1=a0 + ((i+1)/pieces)*(a1-a0);
-              const x0=cx+Math.cos(t0)*rmid, y0=cy+Math.sin(t0)*rmid;
-              const x1=cx+Math.cos(t1)*rmid, y1=cy+Math.sin(t1)*rmid;
-              const dx=x1-x0, dy=y1-y0, len=Math.hypot(dx,dy), ang=Math.atan2(dy,dx);
-              segments.push({x:(x0+x1)/2, y:(y0+y1)/2, w:len, h:WALL_THICK, angle:ang});
-            }
-          }
-        }
-      }
-      const startPos = {x: cx + Math.cos((start.s/sectors)*Math.PI*2)* (maxR-20), y: cy + Math.sin((start.s/sectors)*Math.PI*2)* (maxR-20)};
-      const goalPos = {x:cx, y:cy};
-      return {segments, start:startPos, goal:goalPos};
-    }
-
-    // ---- Build world ----
-    function initWorld(){
-      fitCanvases();
-      engine = Engine.create(); engine.world.gravity.y = 0;
-
-      render = Render.create({
-        canvas: renderCanvas, engine,
-        options:{ width: renderCanvas.width, height: renderCanvas.height, background:'#0E0F12', wireframes:false, pixelRatio: window.devicePixelRatio || 1 }
-      });
-      runner = Runner.create(); Render.run(render); Runner.run(runner, engine);
-
-      const mouse = Mouse.create(render.canvas);
-      const mc = MouseConstraint.create(engine,{ mouse, constraint:{stiffness:0.02, render:{visible:false}} });
-      Composite.add(engine.world, mc); render.mouse = mouse;
-
-      Events.on(mc, 'startdrag', e => { if(e.body===ball) dragging=true; });
-      Events.on(mc, 'enddrag', e => { if(e.body===ball) dragging=false; });
-      render.canvas.addEventListener('mousemove', e => {
-        const rect = render.canvas.getBoundingClientRect();
-        mousePos = {x: e.clientX - rect.left, y: e.clientY - rect.top};
-      });
-      render.canvas.addEventListener('touchmove', e => {
-        if(e.touches[0]){
-          const rect = render.canvas.getBoundingClientRect();
-          mousePos = {x: e.touches[0].clientX - rect.left, y: e.touches[0].clientY - rect.top};
-        }
-      });
-
-      Events.on(engine, 'collisionStart', e=>{
-        for(const pair of e.pairs){
-          const {bodyA, bodyB, collision} = pair;
-          const speed = Vector.magnitude(ball.velocity);
-          if(bodyA===ball || bodyB===ball){
-            spawnGlow(collision.supports[0], Math.min(1, speed/10));
-            ping(420+Math.random()*40, 0.05, 0.02);
-          }
-          if(goalSensor && (bodyA===goalSensor || bodyB===goalSensor) && (bodyA===ball || bodyB===ball)){ winLevel(); }
-        }
-      });
-
-      const nowSeed = Math.floor((Date.now()%1e9));
-      for(let i=0;i<SESSION_LEVELS;i++) levelSeeds[i] = nowSeed + i*1337;
-      for(let i=0;i<SESSION_LEVELS;i++) levelShapes[i] = (i%2===0 ? 'square' : 'circle');
-
-      buildLevelsBar();
-      loadLevel(0);
-      startTimer();
-      loopFx();
-    }
-
-    function loadLevel(idx){
-      currentLevelIdx = idx; timeLeft = MAZE_TIME; overlayMsg.classList.remove('show');
-      Composite.clear(engine.world, false); walls.length = 0; ball = null; goalSensor = null;
-
-      const seed = levelSeeds[idx], shape = levelShapes[idx];
-      const gen = (shape==='square') ? genSquareMaze(seed) : genCircularMaze(seed);
-
-      for(const s of gen.segments){
-        const w = Bodies.rectangle(s.x, s.y, s.w, s.h, { isStatic:true, angle: s.angle || 0,
-          render:{fillStyle:'transparent', strokeStyle:'#1A1A1A', lineWidth:WALL_THICK}
-        });
-        walls.push(w);
-      }
-      Composite.add(engine.world, walls);
-
-      ball = Bodies.circle(gen.start.x, gen.start.y, BALL_R, { restitution:RESTITUTION, frictionAir:FRICTION_AIR, render:{fillStyle:'#2FD0FF'} });
-      Composite.add(engine.world, ball);
-
-      goalSensor = Bodies.circle(gen.goal.x, gen.goal.y, 18, { isSensor:true, isStatic:true, render:{visible:false} });
-      Composite.add(engine.world, goalSensor);
-
-      levelLabel.textContent = `Level ${idx+1}/${SESSION_LEVELS} ${shape==='square'?'▢':'◯'}`;
-      highlightActiveLevel();
-    }
-
-    let timerId;
-    function startTimer(){ clearInterval(timerId); timerId = setInterval(()=>{ timeLeft--; if(timeLeft<0){ timeLeft=0; failLevel(); } timerEl.textContent = `⏱ ${timeLeft}`; }, 1000); }
-
-    function winLevel(){
-      spawnSparkBurst({x:goalSensor.position.x, y:goalSensor.position.y}, 84);
-      ping(680, 0.12, 0.05);
-      overlay('Completed!');
-      setTimeout(()=>{ (currentLevelIdx < SESSION_LEVELS-1) ? loadLevel(currentLevelIdx+1) : overlay('Session complete ✔'); }, 600);
-    }
-    function failLevel(){ overlay('Time up — try again'); }
-    function overlay(text){ overlayMsg.textContent = text; overlayMsg.classList.add('show'); }
-
-    restartBtn.addEventListener('click', ()=> loadLevel(currentLevelIdx));
-    function buildLevelsBar(){
-      levelsBar.innerHTML='';
-      for(let i=0;i<SESSION_LEVELS;i++){
-        const b=document.createElement('button'); b.className='lvl'; b.textContent=String(i+1);
-        b.addEventListener('click', ()=> loadLevel(i));
-        levelsBar.appendChild(b);
-      }
-      highlightActiveLevel();
-    }
-    function highlightActiveLevel(){ [...levelsBar.children].forEach((c, i)=> c.classList.toggle('active', i===currentLevelIdx)); }
-
-    Events.on(engine, 'beforeUpdate', ()=>{
-      if(dragging && ball){
-        const to = Vector.sub(mousePos, ball.position);
-        const dist = Vector.magnitude(to);
-        const dir = Vector.normalise(to);
-        const desired = Vector.mult(dir, Math.min(MAX_SPEED, dist*DRAG_ACCEL*60));
-        const dv = Vector.sub(desired, ball.velocity);
-        Body.applyForce(ball, ball.position, Vector.mult(dv, 0.03));
-      } else if(ball){ Body.setVelocity(ball, Vector.mult(ball.velocity, 1 - DAMPING)); }
     });
 
-    const glows = []; // {x,y,life}
-    function spawnGlow(pt, strength){ glows.push({x:pt.x, y:pt.y, life: 1.0*strength}); }
-    const sparks = []; const SPARK_POOL=160;
-    function spawnSparkBurst(pt, n=90){
-      for(let i=0;i<n;i++){
-        const ang = Math.random()*Math.PI*2;
-        const spd = 2.0 + Math.random()*3.5;
-        const vx = Math.cos(ang)*spd, vy=Math.sin(ang)*spd;
-        const life = 0.5 + Math.random()*0.4;
-        sparks.push({x:pt.x, y:pt.y, vx, vy, life});
-      }
-      while(sparks.length>SPARK_POOL) sparks.shift();
-    }
+    runner = Runner.create();
+    Runner.run(runner, engine);
+    Render.run(render);
 
-    function loopFx(){
-      requestAnimationFrame(loopFx);
-      fxCtx.clearRect(0,0,fxCanvas.width, fxCanvas.height);
-      const scaleX = fxCanvas.width/WORLD_W, scaleY = fxCanvas.height/WORLD_H;
-      fxCtx.save(); fxCtx.scale(scaleX, scaleY);
+    setupInput();
+    generateMaze();
+    animate();
 
-      if(ball){
-        const g = fxCtx.createRadialGradient(ball.position.x, ball.position.y, 0, ball.position.x, ball.position.y, 220);
-        g.addColorStop(0, 'rgba(47,208,255,0.08)'); g.addColorStop(1, 'rgba(0,0,0,0)');
-        fxCtx.fillStyle = g; fxCtx.fillRect(0,0,WORLD_W,WORLD_H);
-      }
+    Events.on(engine, 'collisionStart', (e) => {
+        e.pairs.forEach(p => {
+            const impact = Vector.magnitude(ball.velocity);
+            if (impact > 1) {
+                flashes.push({ x: ball.position.x, y: ball.position.y, r: 10, alpha: 0.8 });
+                shakeIntensity = Math.min(impact * 0.5, 5); // Micro-shake on bumps
+            }
+        });
+    });
+}
 
-      if(goalSensor){
-        fxCtx.save(); fxCtx.translate(goalSensor.position.x, goalSensor.position.y);
-        const r=18; const grad = fxCtx.createRadialGradient(0,0,0,0,0,r*1.3);
-        grad.addColorStop(0,'#000'); grad.addColorStop(0.8,'#050607'); grad.addColorStop(1,'rgba(0,0,0,0)');
-        fxCtx.fillStyle=grad; fxCtx.beginPath(); fxCtx.arc(0,0,r*1.3,0,Math.PI*2); fxCtx.fill(); fxCtx.restore();
-      }
+function setupInput() {
+    const getPos = (e) => e.touches ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : { x: e.clientX, y: e.clientY };
+    
+    window.addEventListener('mousedown', (e) => {
+        const p = getPos(e);
+        if (Vector.magnitude(Vector.sub(p, ball.position)) < 50) isDragging = true;
+    });
+    window.addEventListener('touchstart', (e) => {
+        const p = getPos(e);
+        if (Vector.magnitude(Vector.sub(p, ball.position)) < 60) isDragging = true;
+    });
+    window.addEventListener('mousemove', (e) => mousePos = getPos(e));
+    window.addEventListener('touchmove', (e) => mousePos = getPos(e));
+    window.addEventListener('mouseup', () => isDragging = false);
+    window.addEventListener('touchend', () => isDragging = false);
 
-      if(glowEnabled){
-        for(const g of glows){
-          const rad = 22*(g.life+0.2);
-          const cg = fxCtx.createRadialGradient(g.x,g.y,0,g.x,g.y,rad);
-          cg.addColorStop(0, 'rgba(47,208,255,'+(0.32*g.life)+')');
-          cg.addColorStop(1, 'rgba(47,208,255,0)');
-          fxCtx.globalCompositeOperation='lighter';
-          fxCtx.fillStyle=cg; fxCtx.beginPath(); fxCtx.arc(g.x,g.y,rad,0,Math.PI*2); fxCtx.fill();
-          fxCtx.globalCompositeOperation='source-over'; g.life -= 0.06;
+    Events.on(engine, 'beforeUpdate', () => {
+        const cx = window.innerWidth / 2;
+        const cy = window.innerHeight / 2;
+
+        // Rotate Maze Bodies
+        Composite.allBodies(mazeGroup).forEach(b => {
+            const relPos = Vector.sub(b.position, { x: cx, y: cy });
+            const angle = Math.atan2(relPos.y, relPos.x) + mazeRotationSpeed;
+            const dist = Vector.magnitude(relPos);
+            Body.setPosition(b, { x: cx + Math.cos(angle) * dist, y: cy + Math.sin(angle) * dist });
+            Body.setAngle(b, b.angle + mazeRotationSpeed);
+        });
+
+        if (isDragging) {
+            const force = Vector.mult(Vector.sub(mousePos, ball.position), 0.18);
+            Body.setVelocity(ball, force);
+        } else {
+            Body.setVelocity(ball, Vector.mult(ball.velocity, 0.96));
         }
-        for(let i=glows.length-1;i>=0;i--) if(glows[i].life<=0) glows.splice(i,1);
-      } else glows.length=0;
 
-      for(const s of sparks){
-        fxCtx.fillStyle = 'rgba(255,122,0,'+(s.life*0.9)+')';
-        fxCtx.beginPath(); fxCtx.arc(s.x,s.y,2.0,0,Math.PI*2); fxCtx.fill();
-        s.x += s.vx; s.y += s.vy; s.vx*=0.98; s.vy*=0.98; s.life -= 0.03;
-      }
-      for(let i=sparks.length-1;i>=0;i--) if(sparks[i].life<=0) sparks.splice(i,1);
+        // Parallax Logic
+        const grid = document.getElementById('bg-grid');
+        grid.style.transform = `translate(${ball.position.x * -0.04}px, ${ball.position.y * -0.04}px)`;
 
-      if(ball){
-        const rad=30;
-        const cg=fxCtx.createRadialGradient(ball.position.x,ball.position.y,0,ball.position.x,ball.position.y,rad);
-        cg.addColorStop(0,'rgba(47,208,255,0.24)'); cg.addColorStop(1,'rgba(47,208,255,0)');
-        fxCtx.globalCompositeOperation='lighter';
-        fxCtx.fillStyle=cg; fxCtx.beginPath(); fxCtx.arc(ball.position.x,ball.position.y,rad,0,Math.PI*2); fxCtx.fill();
-        fxCtx.globalCompositeOperation='source-over';
-      }
-      fxCtx.restore();
+        // Win Condition
+        if (Vector.magnitude(Vector.sub(ball.position, goal.position)) < 30) handleWin();
+    });
+}
+
+function generateMaze() {
+    if (mazeGroup) World.remove(engine.world, mazeGroup);
+    mazeGroup = Composite.create();
+    const cx = window.innerWidth/2, cy = window.innerHeight/2;
+
+    if (currentShape === 'circular') {
+        const rings = 4, ringDist = 80;
+        for (let i = 1; i <= rings; i++) {
+            const r = i * ringDist;
+            const segs = 6 + i * 4;
+            for (let j = 0; j < segs; j++) {
+                const angle = (j / segs) * Math.PI * 2;
+                // Radial spokes
+                if (Math.random() > 0.4) {
+                    const spoke = Bodies.rectangle(cx + Math.cos(angle) * (r - ringDist/2), cy + Math.sin(angle) * (r - ringDist/2), 8, ringDist * 0.8, { isStatic: true, angle: angle, render: { fillStyle: COLORS.wall } });
+                    Composite.add(mazeGroup, spoke);
+                }
+                // Ring arcs
+                if (Math.random() > 0.3) {
+                    const arc = Bodies.rectangle(cx + Math.cos(angle) * r, cy + Math.sin(angle) * r, (Math.PI * 2 * r / segs) * 0.9, 8, { isStatic: true, angle: angle + Math.PI/2, render: { fillStyle: COLORS.wall } });
+                    Composite.add(mazeGroup, arc);
+                }
+            }
+        }
+    } else {
+        const s = 80, cols = 8, rows = 6;
+        const ox = cx - (cols*s)/2, oy = cy - (rows*s)/2;
+        for (let i=0; i<=cols; i++) {
+            for (let j=0; j<=rows; j++) {
+                if (Math.random() > 0.6) {
+                    const wall = Bodies.rectangle(ox + i*s, oy + j*s, s*1.1, 10, { isStatic: true, angle: Math.random() > 0.5 ? 0 : Math.PI/2, render: { fillStyle: COLORS.wall } });
+                    Composite.add(mazeGroup, wall);
+                }
+            }
+        }
     }
 
-    initWorld();
-  })();
-  </script>
+    ball = Bodies.circle(cx - 250, cy - 250, 15, { restitution: 0.6, frictionAir: 0, render: { fillStyle: COLORS.ball } });
+    goal = Bodies.circle(cx, cy, 20, { isStatic: true, isSensor: true, render: { fillStyle: '#000', strokeStyle: COLORS.goal, lineWidth: 5 } });
+    World.add(engine.world, [mazeGroup, ball, goal]);
+}
+
+function animate() {
+    const ctx = render.context;
+    ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    
+    // Camera Shake Logic
+    if (shakeIntensity > 0.1) {
+        const sx = (Math.random() - 0.5) * shakeIntensity;
+        const sy = (Math.random() - 0.5) * shakeIntensity;
+        ctx.setTransform(1, 0, 0, 1, sx, sy);
+        shakeIntensity *= 0.9;
+    } else {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+    }
+
+    requestAnimationFrame(animate);
+    ctx.globalCompositeOperation = 'lighter';
+
+    // Goal Black Hole Effect
+    ctx.beginPath();
+    ctx.arc(goal.position.x, goal.position.y, 25 + Math.sin(Date.now()*0.01)*5, 0, Math.PI*2);
+    ctx.strokeStyle = COLORS.goal; ctx.lineWidth = 2; ctx.stroke();
+
+    flashes.forEach((f, i) => {
+        ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI*2);
+        ctx.fillStyle = `rgba(47, 208, 255, ${f.alpha})`; ctx.fill();
+        f.r += 2; f.alpha -= 0.05;
+        if (f.alpha <= 0) flashes.splice(i, 1);
+    });
+
+    particles.forEach((p, i) => {
+        p.x += p.vx; p.y += p.vy; p.life -= 0.02;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+        ctx.fillStyle = `rgba(255, 122, 0, ${p.life})`; ctx.fill();
+        if (p.life <= 0) particles.splice(i, 1);
+    });
+
+    // Ball Core & Glow
+    const g = ctx.createRadialGradient(ball.position.x, ball.position.y, 0, ball.position.x, ball.position.y, 40);
+    g.addColorStop(0, 'rgba(47, 208, 255, 0.8)');
+    g.addColorStop(1, 'rgba(47, 208, 255, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(ball.position.x, ball.position.y, 40, 0, Math.PI*2); ctx.fill();
+    
+    ctx.globalCompositeOperation = 'source-over';
+}
+
+function handleWin() {
+    if (shakeIntensity > 5) return; // Prevent double trigger
+    shakeIntensity = 15;
+    
+    // Spark Burst
+    for (let i = 0; i < 50; i++) {
+        particles.push({
+            x: goal.position.x, y: goal.position.y,
+            vx: (Math.random()-0.5)*15, vy: (Math.random()-0.5)*15,
+            life: 1, size: Math.random()*6
+        });
+    }
+
+    // Hide ball & Reset
+    Body.setPosition(ball, { x: -1000, y: -1000 });
+    const ui = document.getElementById('lvl-val');
+    const n = parseInt(ui.innerText) + 1;
+    ui.innerText = n < 10 ? '0' + n : n;
+
+    setTimeout(generateMaze, 800);
+}
+
+function toggleShape() {
+    currentShape = currentShape === 'circular' ? 'square' : 'circular';
+    generateMaze();
+}
+
+init();
+window.addEventListener('resize', () => {
+    render.canvas.width = window.innerWidth;
+    render.canvas.height = window.innerHeight;
+});
+</script>
 </body>
 </html>
