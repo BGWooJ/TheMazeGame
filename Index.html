@@ -1,64 +1,223 @@
-
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Minimalist Maze: Glow & Physics (Web)</title>
-  <style>
-    :root{
-      --bg:#0E0F12; --wall:#1A1A1A; --ball:#2FD0FF; --spark:#FF7A00; --text:#D7DBE0;
-    }
-    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}
-    #hud{
-      position:fixed;top:10px;left:10px;display:flex;gap:12px;align-items:center;z-index:10;
-      background:#101217cc;border:1px solid #1f232b;border-radius:8px;padding:8px 10px;backdrop-filter:blur(4px);
-    }
-    #hud .btn{cursor:pointer;border:1px solid #2b313b;background:#12161b;color:var(--text);padding:6px 10px;border-radius:6px}
-    #hud .btn:hover{background:#171c22}
-    #hud label{display:flex;align-items:center;gap:6px;cursor:pointer}
-    #levels{
-      position:fixed;top:10px;right:10px;z-index:10;background:#101217cc;border:1px solid #1f232b;border-radius:8px;padding:8px 10px;
-      display:flex;gap:8px;align-items:center;backdrop-filter:blur(4px);
-    }
-    #levels .lvl{width:28px;height:28px;border-radius:6px;display:grid;place-items:center;border:1px solid #2b313b;background:#12161b;color:#9aa3af;cursor:pointer}
-    #levels .lvl.active{color:#fff;border-color:#4b5563;background:#18202a}
-    #gamewrap{position:relative;width:100vw;height:100vh;overflow:hidden}
-    canvas{position:absolute;inset:0}
-    #overlayMsg{
-      position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:28px;pointer-events:none;opacity:0;transition:opacity .25s;
-    }
-    #overlayMsg.show{opacity:1}
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Minimalist Maze: Glow & Physics</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <style>
+        body { margin: 0; background: #0E0F12; overflow: hidden; font-family: sans-serif; }
+        canvas { display: block; }
+        #ui {
+            position: absolute; top: 20px; left: 20px; color: #2FD0FF;
+            pointer-events: none; text-transform: uppercase; letter-spacing: 2px;
+        }
+        .controls {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            display: flex; gap: 20px;
+        }
+        button {
+            background: rgba(47, 208, 255, 0.1); border: 1px solid #2FD0FF;
+            color: #2FD0FF; padding: 10px 20px; cursor: pointer; transition: 0.3s;
+        }
+        button:hover { background: rgba(47, 208, 255, 0.3); }
+    </style>
 </head>
 <body>
-  <div id="gamewrap">
-    <canvas id="render"></canvas>
-    <canvas id="fx"></canvas>
-    <div id="overlayMsg"></div>
-  </div>
 
-  <div id="hud">
-    <div id="timer">⏱ 180</div>
-    <div id="levelLabel">Level 1/5 ▢</div>
-    <button class="btn" id="restart">Restart</button>
-    <label><input type="checkbox" id="glowToggle" checked/> Glow</label>
-    <label><input type="checkbox" id="audioToggle"/> Audio</label>
-  </div>
+    <div id="ui">
+        <div>Level: <span id="lvl-val">1</span></div>
+        <div style="font-size: 0.8em; opacity: 0.7;">Drag the blue ball to the goal</div>
+    </div>
 
-  <div id="levels"></div>
+    <div class="controls">
+        <button onclick="generateMaze()">New Maze</button>
+    </div>
 
-  <!-- Matter.js physics (CDN) — FIXED SCRIPT TAG -->
-  https://unpkg.com/matter-js@0.19.0/build/matter.min.js</script>
+<script>
+/** * CONFIGURATION & TOKENS
+ */
+const CONFIG = {
+    cols: 12, rows: 10,
+    cellSize: 60,
+    wallThickness: 6,
+    colors: {
+        ball: '#2FD0FF',
+        goal: '#FF7A00',
+        wall: '#1A1A1A',
+        bg: '#0E0F12'
+    }
+};
 
-  <script>
-  (() => {
-    const {Engine, Render, Runner, Bodies, Composite, Events, Body, Vector, Mouse, MouseConstraint} = Matter;
+// Matter.js modules
+const { Engine, Render, Runner, World, Bodies, MouseConstraint, Mouse, Composite, Events, Body } = Matter;
 
-    // ---- Config ----
-    const SESSION_LEVELS = 5;
-    const MAZE_TIME = 180; // seconds per level
-    const WORLD_W = 880, WORLD_H = 640;            // logical world size
-    const WALL_THICK = 18;                          // collider thickness
-    const BALL_R = 14;                              // ball radius
-    const MAX_SPEED = 9.0;                          // drag-assist cap
+let engine, render, runner, mazeGroup, ball, goal;
+
+function init() {
+    engine = Engine.create({ gravity: { x: 0, y: 0 } });
+    render = Render.create({
+        element: document.body,
+        engine: engine,
+        options: {
+            width: window.innerWidth,
+            height: window.innerHeight,
+            wireframes: false,
+            background: CONFIG.colors.bg
+        }
+    });
+
+    runner = Runner.create();
+    Runner.run(runner, engine);
+    Render.run(render);
+
+    // Mouse control
+    const mouse = Mouse.create(render.canvas);
+    const mouseConstraint = MouseConstraint.create(engine, {
+        mouse: mouse,
+        constraint: { stiffness: 0.1, render: { visible: false } }
+    });
+    World.add(engine.world, mouseConstraint);
+
+    generateMaze();
+    
+    // Add glowing effect via Canvas post-processing hook
+    Events.on(render, 'afterRender', () => {
+        const ctx = render.context;
+        ctx.globalCompositeOperation = 'lighter';
+        // Simple bloom for the ball
+        ctx.beginPath();
+        ctx.arc(ball.position.x, ball.position.y, 20, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(47, 208, 255, 0.2)';
+        ctx.fill();
+    });
+
+    // Win Condition Check
+    Events.on(engine, 'beforeUpdate', () => {
+        const dist = Math.hypot(ball.position.x - goal.position.x, ball.position.y - goal.position.y);
+        if (dist < 25) {
+            handleWin();
+        }
+    });
+}
+
+/** * MAZE GENERATION (Recursive Backtracker)
+ */
+function generateMaze() {
+    if (mazeGroup) World.remove(engine.world, mazeGroup);
+    mazeGroup = Composite.create();
+
+    const grid = [];
+    for (let r = 0; r < CONFIG.rows; r++) {
+        grid[r] = [];
+        for (let c = 0; c < CONFIG.cols; c++) {
+            grid[r][c] = { r, c, walls: [true, true, true, true], visited: false };
+        }
+    }
+
+    const stack = [];
+    let current = grid[0][0];
+    current.visited = true;
+
+    // Algorithm loop
+    while (true) {
+        const neighbors = getUnvisitedNeighbors(current, grid);
+        if (neighbors.length > 0) {
+            const next = neighbors[Math.floor(Math.random() * neighbors.length)];
+            removeWalls(current, next);
+            stack.push(current);
+            current = next;
+            current.visited = true;
+        } else if (stack.length > 0) {
+            current = stack.pop();
+        } else {
+            break;
+        }
+    }
+
+    // Offset to center maze
+    const offsetX = (window.innerWidth - CONFIG.cols * CONFIG.cellSize) / 2;
+    const offsetY = (window.innerHeight - CONFIG.rows * CONFIG.cellSize) / 2;
+
+    // Create Physics Bodies for Walls
+    grid.forEach(row => {
+        row.forEach(cell => {
+            const x = offsetX + cell.c * CONFIG.cellSize;
+            const y = offsetY + cell.r * CONFIG.cellSize;
+            const s = CONFIG.cellSize;
+            const t = CONFIG.wallThickness;
+
+            if (cell.walls[0]) addWall(x + s/2, y, s, t); // Top
+            if (cell.walls[1]) addWall(x + s, y + s/2, t, s); // Right
+            if (cell.walls[2]) addWall(x + s/2, y + s, s, t); // Bottom
+            if (cell.walls[3]) addWall(x, y + s/2, t, s); // Left
+        });
+    });
+
+    function addWall(x, y, w, h) {
+        const wall = Bodies.rectangle(x, y, w, h, { 
+            isStatic: true, 
+            render: { fillStyle: CONFIG.colors.wall },
+            restitution: 0.5 
+        });
+        Composite.add(mazeGroup, wall);
+    }
+
+    // Initialize Ball
+    if (ball) World.remove(engine.world, ball);
+    ball = Bodies.circle(offsetX + CONFIG.cellSize/2, offsetY + CONFIG.cellSize/2, 14, {
+        restitution: 0.5,
+        friction: 0.1,
+        frictionAir: 0.05,
+        render: { fillStyle: CONFIG.colors.ball }
+    });
+
+    // Initialize Goal
+    if (goal) World.remove(engine.world, goal);
+    goal = Bodies.circle(offsetX + (CONFIG.cols-1.5) * CONFIG.cellSize + CONFIG.cellSize, offsetY + (CONFIG.rows-1.5) * CONFIG.cellSize + CONFIG.cellSize, 10, {
+        isStatic: true,
+        isSensor: true,
+        render: { fillStyle: '#000', strokeStyle: CONFIG.colors.goal, lineWidth: 2 }
+    });
+
+    World.add(engine.world, [mazeGroup, ball, goal]);
+}
+
+/** * HELPERS
+ */
+function getUnvisitedNeighbors(cell, grid) {
+    const { r, c } = cell;
+    const n = [];
+    if (r > 0 && !grid[r-1][c].visited) n.push(grid[r-1][c]);
+    if (c < CONFIG.cols - 1 && !grid[r][c+1].visited) n.push(grid[r][c+1]);
+    if (r < CONFIG.rows - 1 && !grid[r+1][c].visited) n.push(grid[r+1][c]);
+    if (c > 0 && !grid[r][c-1].visited) n.push(grid[r][c-1]);
+    return n;
+}
+
+function removeWalls(a, b) {
+    if (a.r > b.r) { a.walls[0] = false; b.walls[2] = false; }
+    else if (a.r < b.r) { a.walls[2] = false; b.walls[0] = false; }
+    else if (a.c < b.c) { a.walls[1] = false; b.walls[3] = false; }
+    else if (a.c > b.c) { a.walls[3] = false; b.walls[1] = false; }
+}
+
+function handleWin() {
+    // Basic success feedback
+    document.body.style.backgroundColor = CONFIG.colors.goal;
+    setTimeout(() => {
+        document.body.style.backgroundColor = CONFIG.colors.bg;
+        generateMaze();
+        document.getElementById('lvl-val').innerText = parseInt(document.getElementById('lvl-val').innerText) + 1;
+    }, 300);
+}
+
+init();
+
+window.addEventListener('resize', () => {
+    render.canvas.width = window.innerWidth;
+    render.canvas.height = window.innerHeight;
+});
+</script>
+</body>
+</html>
