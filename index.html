@@ -3,105 +3,100 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Minimalist Maze: Kinetic Pro</title>
+    <title>Minimalist Maze: Solid Physics</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
     <style>
         body { margin: 0; background: #0E0F12; overflow: hidden; font-family: 'Inter', sans-serif; touch-action: none; }
         canvas { display: block; z-index: 10; }
-        
         #bg-grid {
             position: absolute; width: 200%; height: 200%; top: -50%; left: -50%;
-            background-image: 
-                linear-gradient(rgba(47, 208, 255, 0.05) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(47, 208, 255, 0.05) 1px, transparent 1px);
-            background-size: 60px 60px;
-            z-index: 1; pointer-events: none;
+            background-image: radial-gradient(circle, rgba(47, 208, 255, 0.08) 1px, transparent 1px);
+            background-size: 50px 50px; z-index: 1; pointer-events: none;
         }
-
         #ui {
             position: absolute; top: 40px; left: 40px; color: #2FD0FF;
             z-index: 20; pointer-events: none; text-transform: uppercase; letter-spacing: 4px;
         }
-        
         #lvl-val { font-size: 32px; display: block; font-weight: 900; }
-
         .controls {
             position: absolute; bottom: 40px; left: 50%; transform: translateX(-50%);
             z-index: 20; display: flex; gap: 20px;
         }
-
         button {
-            background: rgba(0, 0, 0, 0.7); border: 1px solid #2FD0FF;
+            background: rgba(0, 0, 0, 0.8); border: 1px solid #2FD0FF;
             color: #2FD0FF; padding: 12px 24px; cursor: pointer; transition: 0.2s;
             font-size: 10px; letter-spacing: 2px; text-transform: uppercase; border-radius: 4px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
         }
         button:hover { background: #2FD0FF; color: #000; }
     </style>
 </head>
 <body>
-
     <div id="bg-grid"></div>
     <div id="ui">Level <span id="lvl-val">01</span></div>
-
     <div class="controls">
-        <button onclick="toggleShape()">Toggle Shape</button>
+        <button onclick="toggleShape()">Switch Maze Mode</button>
         <button onclick="generateMaze()">Regenerate</button>
     </div>
 
 <script>
-const COLORS = { ball: '#2FD0FF', goal: '#FF7A00', wall: '#2A2A2E', bg: '#0E0F12' };
-const { Engine, Render, Runner, World, Bodies, Body, Composite, Events, Vector } = Matter;
+const COLORS = { ball: '#2FD0FF', goal: '#FF7A00', wall: '#1F1F23', bg: '#0E0F12' };
+const { Engine, Render, Runner, World, Bodies, Body, Composite, Events, Vector, Constraint, Mouse, MouseConstraint } = Matter;
 
-let engine, render, runner, mazeGroup, ball, goal;
-let isDragging = false, mousePos = { x: 0, y: 0 };
-let particles = [], collisionFlashes = [];
-let shakeX = 0, shakeY = 0, shakeIntensity = 0;
+let engine, render, runner, mazeGroup, ball, goal, dragConstraint;
+let particles = [], flashes = [];
+let shakeIntensity = 0;
 let currentShape = 'circular';
-const rotationSpeed = 0.004;
+let mazeRotation = 0;
 
 function init() {
-    engine = Engine.create({ gravity: { x: 0, y: 0 } });
+    engine = Engine.create({ gravity: { x: 0, y: 0 }, positionIterations: 10, velocityIterations: 10 });
     render = Render.create({
-        element: document.body,
-        engine: engine,
-        options: {
-            width: window.innerWidth, height: window.innerHeight,
-            wireframes: false, background: 'transparent'
-        }
+        element: document.body, engine: engine,
+        options: { width: window.innerWidth, height: window.innerHeight, wireframes: false, background: 'transparent' }
     });
 
     runner = Runner.create();
     Runner.run(runner, engine);
     Render.run(render);
 
-    setupInput();
+    // Setup High-Fidelity Mouse Control
+    const mouse = Mouse.create(render.canvas);
+    dragConstraint = MouseConstraint.create(engine, {
+        mouse: mouse,
+        constraint: { stiffness: 0.1, damping: 0.5, render: { visible: false } }
+    });
+    World.add(engine.world, dragConstraint);
+
     generateMaze();
 
-    // CUSTOM DRAWING HOOK (Runs after Matter.js renders bodies)
     Events.on(render, 'afterRender', () => {
         const ctx = render.context;
-        
-        // Apply Camera Shake
+        // Camera Shake
         if (shakeIntensity > 0.1) {
-            shakeX = (Math.random() - 0.5) * shakeIntensity;
-            shakeY = (Math.random() - 0.5) * shakeIntensity;
-            ctx.setTransform(1, 0, 0, 1, shakeX, shakeY);
+            ctx.setTransform(1, 0, 0, 1, (Math.random()-0.5)*shakeIntensity, (Math.random()-0.5)*shakeIntensity);
             shakeIntensity *= 0.9;
-        } else {
-            ctx.setTransform(1, 0, 0, 1, 0, 0);
-        }
+        } else { ctx.setTransform(1, 0, 0, 1, 0, 0); }
 
         ctx.globalCompositeOperation = 'lighter';
+        
+        // Goal - Black Hole Effect
+        const time = Date.now() * 0.002;
+        const goalGrad = ctx.createRadialGradient(goal.position.x, goal.position.y, 5, goal.position.x, goal.position.y, 30 + Math.sin(time)*5);
+        goalGrad.addColorStop(0, '#000');
+        goalGrad.addColorStop(0.5, '#000');
+        goalGrad.addColorStop(1, COLORS.goal);
+        ctx.fillStyle = goalGrad;
+        ctx.beginPath(); ctx.arc(goal.position.x, goal.position.y, 35, 0, Math.PI*2); ctx.fill();
 
-        // 1. Draw Collision Flashes
-        collisionFlashes.forEach((f, i) => {
+        // Flashes & Particles
+        flashes.forEach((f, i) => {
             ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI*2);
             ctx.fillStyle = `rgba(47, 208, 255, ${f.alpha})`; ctx.fill();
-            f.r += 2; f.alpha -= 0.05;
-            if (f.alpha <= 0) collisionFlashes.splice(i, 1);
+            f.r += 1.5; f.alpha -= 0.04;
+            if (f.alpha <= 0) flashes.splice(i, 1);
         });
 
-        // 2. Draw Win Particles
         particles.forEach((p, i) => {
             p.x += p.vx; p.y += p.vy; p.life -= 0.02;
             ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
@@ -109,22 +104,51 @@ function init() {
             if (p.life <= 0) particles.splice(i, 1);
         });
 
-        // 3. Ball Bloom
-        const g = ctx.createRadialGradient(ball.position.x, ball.position.y, 0, ball.position.x, ball.position.y, 45);
-        g.addColorStop(0, 'rgba(47, 208, 255, 0.6)');
-        g.addColorStop(1, 'rgba(47, 208, 255, 0)');
-        ctx.fillStyle = g;
-        ctx.beginPath(); ctx.arc(ball.position.x, ball.position.y, 45, 0, Math.PI*2); ctx.fill();
+        // Ball Glow
+        const ballGrad = ctx.createRadialGradient(ball.position.x, ball.position.y, 0, ball.position.x, ball.position.y, 40);
+        ballGrad.addColorStop(0, 'rgba(47, 208, 255, 0.7)');
+        ballGrad.addColorStop(1, 'rgba(47, 208, 255, 0)');
+        ctx.fillStyle = ballGrad;
+        ctx.beginPath(); ctx.arc(ball.position.x, ball.position.y, 40, 0, Math.PI*2); ctx.fill();
 
         ctx.globalCompositeOperation = 'source-over';
     });
 
-    // Handle Wall Collisions
     Events.on(engine, 'collisionStart', (e) => {
         e.pairs.forEach(p => {
-            collisionFlashes.push({ x: ball.position.x, y: ball.position.y, r: 10, alpha: 0.8 });
-            shakeIntensity = 3;
+            if (Vector.magnitude(ball.velocity) > 1.5) {
+                flashes.push({ x: ball.position.x, y: ball.position.y, r: 10, alpha: 0.6 });
+                shakeIntensity = 4;
+            }
         });
+    });
+
+    Events.on(engine, 'beforeUpdate', () => {
+        const cx = window.innerWidth/2, cy = window.innerHeight/2;
+        
+        // Maze Rotation & Centripetal Gravity
+        mazeRotation += 0.003;
+        Composite.allBodies(mazeGroup).forEach(b => {
+            const rel = Vector.sub(b.position, {x: cx, y: cy});
+            const angle = Math.atan2(rel.y, rel.x) + 0.003;
+            const d = Vector.magnitude(rel);
+            Body.setPosition(b, { x: cx + Math.cos(angle)*d, y: cy + Math.sin(angle)*d });
+            Body.setAngle(b, b.angle + 0.003);
+        });
+
+        // Floating toward gravity when released
+        if (!dragConstraint.body) {
+            const gravityPull = Vector.mult(Vector.normalise(Vector.sub(goal.position, ball.position)), 0.0008);
+            Body.applyForce(ball, ball.position, gravityPull);
+            // Damping to make it feel fluid
+            Body.setVelocity(ball, Vector.mult(ball.velocity, 0.985));
+        }
+
+        // Parallax
+        document.getElementById('bg-grid').style.transform = `translate(${ball.position.x * -0.03}px, ${ball.position.y * -0.03}px)`;
+
+        // Win logic
+        if (Vector.magnitude(Vector.sub(ball.position, goal.position)) < 30) handleWin();
     });
 }
 
@@ -134,101 +158,68 @@ function generateMaze() {
     const cx = window.innerWidth/2, cy = window.innerHeight/2;
 
     if (currentShape === 'circular') {
-        const rings = 4, ringDist = 70;
-        for (let i = 1; i <= rings; i++) {
+        const rings = 5, ringDist = 65;
+        // Create Solid Outer Ring
+        const segments = 40;
+        for(let i=0; i<segments; i++) {
+            const angle = (i/segments) * Math.PI*2;
+            const outer = Bodies.rectangle(cx + Math.cos(angle)*(rings*ringDist), cy + Math.sin(angle)*(rings*ringDist), 30, 10, { isStatic: true, angle: angle + Math.PI/2, render: { fillStyle: COLORS.wall } });
+            Composite.add(mazeGroup, outer);
+        }
+        // Inner Walls
+        for (let i = 1; i < rings; i++) {
             const r = i * ringDist;
-            const segments = 8 + i * 2;
-            for (let j = 0; j < segments; j++) {
-                const angle = (j / segments) * Math.PI * 2;
-                // Add some randomness to walls for paths
-                if (Math.random() > 0.3) {
-                    const spoke = Bodies.rectangle(cx + Math.cos(angle)*r, cy + Math.sin(angle)*r, 10, 60, { 
-                        isStatic: true, angle: angle, render: { fillStyle: COLORS.wall } 
-                    });
-                    Composite.add(mazeGroup, spoke);
-                }
+            const segs = 6 + i*2;
+            for (let j = 0; j < segs; j++) {
+                const angle = (j / segs) * Math.PI * 2;
                 if (Math.random() > 0.4) {
-                    const arc = Bodies.rectangle(cx + Math.cos(angle)*r, cy + Math.sin(angle)*r, 80, 10, { 
-                        isStatic: true, angle: angle + Math.PI/2, render: { fillStyle: COLORS.wall } 
-                    });
-                    Composite.add(mazeGroup, arc);
+                    const wall = Bodies.rectangle(cx + Math.cos(angle)*r, cy + Math.sin(angle)*r, 80, 10, { isStatic: true, angle: angle + Math.PI/2, render: { fillStyle: COLORS.wall } });
+                    Composite.add(mazeGroup, wall);
                 }
             }
         }
+        goal = Bodies.circle(cx, cy, 20, { isStatic: true, isSensor: true });
+        if (ball) Body.setPosition(ball, {x: cx + ringDist*4, y: cy});
     } else {
-        const s = 80;
-        for (let i = -4; i <= 4; i++) {
-            for (let j = -3; j <= 3; j++) {
-                if (Math.random() > 0.6) {
-                    const w = Bodies.rectangle(cx + i*s, cy + j*s, s, 10, { 
-                        isStatic: true, angle: Math.random() > 0.5 ? 0 : Math.PI/2, render: { fillStyle: COLORS.wall } 
-                    });
-                    Composite.add(mazeGroup, w);
+        const s = 90, cols = 8, rows = 6;
+        const ox = cx - (cols*s)/2, oy = cy - (rows*s)/2;
+        // Solid Boundary
+        Composite.add(mazeGroup, Bodies.rectangle(cx, oy-5, cols*s+10, 10, { isStatic: true, render: { fillStyle: COLORS.wall } }));
+        Composite.add(mazeGroup, Bodies.rectangle(cx, oy+rows*s+5, cols*s+10, 10, { isStatic: true, render: { fillStyle: COLORS.wall } }));
+        Composite.add(mazeGroup, Bodies.rectangle(ox-5, cy, 10, rows*s+10, { isStatic: true, render: { fillStyle: COLORS.wall } }));
+        Composite.add(mazeGroup, Bodies.rectangle(ox+cols*s+5, cy, 10, rows*s+10, { isStatic: true, render: { fillStyle: COLORS.wall } }));
+        
+        for (let i = 1; i < cols; i++) {
+            for (let j = 1; j < rows; j++) {
+                if (Math.random() > 0.5) {
+                    const wall = Bodies.rectangle(ox + i*s, oy + j*s, s, 10, { isStatic: true, angle: Math.random() > 0.5 ? 0 : Math.PI/2, render: { fillStyle: COLORS.wall } });
+                    Composite.add(mazeGroup, wall);
                 }
             }
         }
+        goal = Bodies.circle(ox + (cols-0.5)*s, oy + (rows-0.5)*s, 20, { isStatic: true, isSensor: true });
+        if (ball) Body.setPosition(ball, {x: ox + s/2, y: oy + s/2});
     }
 
-    if (ball) World.remove(engine.world, ball);
-    ball = Bodies.circle(cx - 200, cy - 200, 15, { 
-        restitution: 0.5, frictionAir: 0.05, render: { fillStyle: COLORS.ball } 
-    });
-
-    if (goal) World.remove(engine.world, goal);
-    goal = Bodies.circle(cx, cy, 25, { 
-        isStatic: true, isSensor: true, render: { fillStyle: '#000', strokeStyle: COLORS.goal, lineWidth: 4 } 
-    });
-
+    if (!ball) {
+        ball = Bodies.circle(cx - 200, cy - 200, 15, { 
+            restitution: 0.4, friction: 0.1, frictionAir: 0.01, density: 0.002, render: { fillStyle: COLORS.ball } 
+        });
+    }
+    
     World.add(engine.world, [mazeGroup, ball, goal]);
 }
 
-function setupInput() {
-    const getPos = (e) => e.touches ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : { x: e.clientX, y: e.clientY };
+function handleWin() {
+    if (shakeIntensity > 10) return;
+    shakeIntensity = 20;
+    for (let i = 0; i < 40; i++) particles.push({ x: goal.position.x, y: goal.position.y, vx: (Math.random()-0.5)*15, vy: (Math.random()-0.5)*15, life: 1, size: Math.random()*5 });
     
-    window.addEventListener('mousedown', (e) => {
-        const p = getPos(e);
-        if (Vector.magnitude(Vector.sub(p, ball.position)) < 50) isDragging = true;
-    });
-    window.addEventListener('touchstart', (e) => {
-        const p = getPos(e);
-        if (Vector.magnitude(Vector.sub(p, ball.position)) < 60) isDragging = true;
-    });
-    window.addEventListener('mousemove', (e) => mousePos = getPos(e));
-    window.addEventListener('touchmove', (e) => mousePos = getPos(e));
-    window.addEventListener('mouseup', () => isDragging = false);
-    window.addEventListener('touchend', () => isDragging = false);
-
-    Events.on(engine, 'beforeUpdate', () => {
-        const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
-
-        // Maze Rotation
-        Composite.allBodies(mazeGroup).forEach(b => {
-            const relPos = Vector.sub(b.position, { x: cx, y: cy });
-            const angle = Math.atan2(relPos.y, relPos.x) + rotationSpeed;
-            const dist = Vector.magnitude(relPos);
-            Body.setPosition(b, { x: cx + Math.cos(angle) * dist, y: cy + Math.sin(angle) * dist });
-            Body.setAngle(b, b.angle + rotationSpeed);
-        });
-
-        if (isDragging) {
-            Body.setVelocity(ball, Vector.mult(Vector.sub(mousePos, ball.position), 0.2));
-        }
-
-        // Parallax
-        document.getElementById('bg-grid').style.transform = `translate(${ball.position.x * -0.05}px, ${ball.position.y * -0.05}px)`;
-
-        // Goal Check
-        if (Vector.magnitude(Vector.sub(ball.position, goal.position)) < 30) {
-            shakeIntensity = 15;
-            for(let i=0; i<30; i++) particles.push({ x: goal.position.x, y: goal.position.y, vx: (Math.random()-0.5)*15, vy: (Math.random()-0.5)*15, life: 1, size: Math.random()*5 });
-            Body.setPosition(ball, { x: -1000, y: -1000 });
-            setTimeout(() => {
-                const ui = document.getElementById('lvl-val');
-                ui.innerText = (parseInt(ui.innerText) + 1).toString().padStart(2, '0');
-                generateMaze();
-            }, 800);
-        }
-    });
+    Body.setPosition(ball, { x: -2000, y: -2000 });
+    const lvl = document.getElementById('lvl-val');
+    lvl.innerText = (parseInt(lvl.innerText) + 1).toString().padStart(2, '0');
+    
+    setTimeout(generateMaze, 1000);
 }
 
 function toggleShape() {
