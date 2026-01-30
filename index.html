@@ -2,66 +2,63 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Minimalist Maze: Kinetic Master</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Minimalist Maze: Gravity Tilt</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
     <style>
-        body { margin: 0; background: #0E0F12; overflow: hidden; font-family: 'Inter', sans-serif; touch-action: none; }
+        body { margin: 0; background: #0E0F12; overflow: hidden; font-family: 'Inter', sans-serif; }
         canvas { display: block; z-index: 10; position: relative; }
+        
         #bg-parallax {
-            position: absolute; width: 150vw; height: 150vh; top: -25%; left: -25%;
-            background-image: 
-                radial-gradient(circle at 2px 2px, rgba(47, 208, 255, 0.1) 1px, transparent 0),
-                linear-gradient(rgba(47, 208, 255, 0.03) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(47, 208, 255, 0.03) 1px, transparent 1px);
-            background-size: 40px 40px, 120px 120px, 120px 120px;
-            z-index: 1; pointer-events: none; transition: transform 0.1s ease-out;
+            position: absolute; width: 200%; height: 200%; top: -50%; left: -50%;
+            background-image: radial-gradient(circle at 2px 2px, rgba(47, 208, 255, 0.07) 1px, transparent 0);
+            background-size: 50px 50px; z-index: 1; pointer-events: none;
         }
-        #ui {
-            position: absolute; top: 40px; left: 40px; color: #2FD0FF;
-            z-index: 20; pointer-events: none; text-transform: uppercase; letter-spacing: 4px;
+
+        #ui-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; padding: 40px;
+            display: flex; justify-content: space-between; box-sizing: border-box;
+            color: #2FD0FF; z-index: 20; pointer-events: none; text-transform: uppercase; letter-spacing: 4px;
         }
-        #lvl-val { font-size: 32px; display: block; font-weight: 900; text-shadow: 0 0 15px #2FD0FF; }
-        .controls {
-            position: absolute; bottom: 40px; left: 50%; transform: translateX(-50%);
-            z-index: 20; display: flex; gap: 15px;
+        
+        #timer { font-size: 32px; font-weight: 900; color: #FF7A00; }
+        #lvl-info { font-size: 18px; font-weight: 700; }
+
+        #msg-overlay {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: #FF7A00; font-size: 48px; font-weight: 900; text-align: center;
+            display: none; z-index: 30; text-transform: uppercase;
         }
-        button {
-            background: rgba(0, 0, 0, 0.8); border: 1px solid #2FD0FF;
-            color: #2FD0FF; padding: 12px 24px; cursor: pointer; transition: 0.2s;
-            font-size: 10px; letter-spacing: 2px; text-transform: uppercase; border-radius: 4px;
-            backdrop-filter: blur(8px);
-        }
-        button:hover { background: #2FD0FF; color: #000; box-shadow: 0 0 20px #2FD0FF; }
     </style>
 </head>
 <body>
 
     <div id="bg-parallax"></div>
-    <div id="ui">Level <span id="lvl-val">01</span></div>
-
-    <div class="controls">
-        <button onclick="changeShape('square')">Square Maze</button>
-        <button onclick="changeShape('circular')">Circular Maze</button>
-        <button onclick="resetGame()">Reset Physics</button>
+    <div id="ui-overlay">
+        <div id="lvl-info">Level <span id="lvl-val">01</span></div>
+        <div id="timer">01:00</div>
     </div>
+    <div id="msg-overlay">TIME UP<br><small style="font-size: 14px; color: #fff;">Press any key to retry</small></div>
 
 <script>
-/** * CONSTANTS & CONFIG
+/** * CONFIGURATION
  */
-const COLORS = { ball: '#2FD0FF', goal: '#FF7A00', wall: '#1A1A1E', bg: '#0E0F12' };
-const { Engine, Render, Runner, World, Bodies, Body, Composite, Events, Vector, Mouse, MouseConstraint } = Matter;
+const COLORS = { ball: '#2FD0FF', goal: '#FF7A00', wall: '#252529', bg: '#0E0F12' };
+const { Engine, Render, Runner, World, Bodies, Body, Composite, Events, Vector } = Matter;
 
-let engine, render, runner, mazeGroup, ball, goal, mConstraint;
-let particles = [], flashes = [];
-let shake = 0, level = 1, currentShape = 'square';
+let engine, render, runner, mazeGroup, ball, goal;
+let keys = {};
+let timeLeft = 60;
+let level = 1;
+let isGameOver = false;
+let rotationAngle = 0;
 
 function init() {
-    // 1. Setup Engine with High Accuracy
+    // High-accuracy engine to prevent phasing
     engine = Engine.create({ 
-        gravity: { x: 0, y: 1.2 }, // Natural downward gravity
-        positionIterations: 10, 
-        velocityIterations: 10 
+        gravity: { x: 0, y: 1.5 }, // Strong downward gravity
+        positionIterations: 20, 
+        velocityIterations: 20 
     });
 
     render = Render.create({
@@ -77,195 +74,168 @@ function init() {
     Runner.run(runner, engine);
     Render.run(render);
 
-    // 2. Add Physical Dragging (Constraint-based)
-    const mouse = Mouse.create(render.canvas);
-    mConstraint = MouseConstraint.create(engine, {
-        mouse: mouse,
-        constraint: { stiffness: 0.15, damping: 0.1, render: { visible: false } }
+    window.addEventListener('keydown', e => { 
+        keys[e.code] = true; 
+        if(isGameOver) resetLevel();
     });
-    World.add(engine.world, mConstraint);
+    window.addEventListener('keyup', e => keys[e.code] = false);
 
-    buildLevel();
-    loop();
-
-    // 3. Collision Effects
-    Events.on(engine, 'collisionStart', (e) => {
-        e.pairs.forEach(p => {
-            const force = Vector.magnitude(ball.velocity);
-            if (force > 2) {
-                flashes.push({ x: ball.position.x, y: ball.position.y, r: 10, a: 0.7 });
-                shake = Math.min(force * 1.5, 8);
-            }
-        });
-    });
+    startLevel();
+    updateLoop();
+    setInterval(tickTimer, 1000);
 }
 
-/** * MAZE LOGIC: RECURSIVE BACKTRACKER
- */
-function buildLevel() {
-    if (mazeGroup) World.remove(engine.world, mazeGroup);
-    mazeGroup = Composite.create();
+function tickTimer() {
+    if (isGameOver) return;
+    timeLeft--;
+    const m = Math.floor(timeLeft / 60);
+    const s = timeLeft % 60;
+    document.getElementById('timer').innerText = `${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
     
+    if (timeLeft <= 0) {
+        isGameOver = true;
+        document.getElementById('msg-overlay').style.display = 'block';
+    }
+}
+
+/** * MAZE GENERATION
+ */
+function startLevel() {
+    isGameOver = false;
+    timeLeft = 60;
+    document.getElementById('msg-overlay').style.display = 'none';
+    
+    if (mazeGroup) World.clear(engine.world); // Total clear to prevent haywire physics
+    mazeGroup = Composite.create();
+
     const cx = window.innerWidth / 2;
     const cy = window.innerHeight / 2;
+    const cols = 11, rows = 11, s = 60; // Odd numbers for a clear center
 
-    if (currentShape === 'square') {
-        const cols = 10, rows = 8, size = 70;
-        const grid = Array.from({ length: rows }, (_, r) => 
-            Array.from({ length: cols }, (_, c) => ({ r, c, visited: false, walls: [true, true, true, true] }))
-        );
+    const grid = Array.from({ length: rows }, (_, r) => 
+        Array.from({ length: cols }, (_, c) => ({ r, c, visited: false, walls: [true, true, true, true] }))
+    );
 
-        // Algorithm
-        const stack = [];
-        let curr = grid[0][0];
-        curr.visited = true;
-        while (true) {
-            const neighbors = [];
-            if (curr.r > 0 && !grid[curr.r-1][curr.c].visited) neighbors.push(grid[curr.r-1][curr.c]);
-            if (curr.c < cols-1 && !grid[curr.r][curr.c+1].visited) neighbors.push(grid[curr.r][curr.c+1]);
-            if (curr.r < rows-1 && !grid[curr.r+1][curr.c].visited) neighbors.push(grid[curr.r+1][curr.c]);
-            if (curr.c > 0 && !grid[curr.r][curr.c-1].visited) neighbors.push(grid[curr.r][curr.c-1]);
+    // Maze Algorithm
+    const stack = [];
+    let curr = grid[0][0];
+    curr.visited = true;
 
-            if (neighbors.length) {
-                const next = neighbors[Math.floor(Math.random() * neighbors.length)];
-                if (next.r < curr.r) { curr.walls[0] = false; next.walls[2] = false; }
-                else if (next.c > curr.c) { curr.walls[1] = false; next.walls[3] = false; }
-                else if (next.r > curr.r) { curr.walls[2] = false; next.walls[0] = false; }
-                else if (next.c < curr.c) { curr.walls[3] = false; next.walls[1] = false; }
-                stack.push(curr);
-                curr = next;
-                curr.visited = true;
-            } else if (stack.length) {
-                curr = stack.pop();
-            } else break;
-        }
+    while (true) {
+        const neighbors = [];
+        const { r, c } = curr;
+        if (r > 0 && !grid[r-1][c].visited) neighbors.push(grid[r-1][c]);
+        if (c < cols-1 && !grid[r][c+1].visited) neighbors.push(grid[r][c+1]);
+        if (r < rows-1 && !grid[r+1][c].visited) neighbors.push(grid[r+1][c]);
+        if (c > 0 && !grid[r][c-1].visited) neighbors.push(grid[r][c-1]);
 
-        // Draw Walls
-        const ox = cx - (cols * size) / 2;
-        const oy = cy - (rows * size) / 2;
-        const t = 10; // Thickness
-
-        grid.forEach(row => row.forEach(cell => {
-            const x = ox + cell.c * size, y = oy + cell.r * size;
-            if (cell.walls[0]) addWall(x + size/2, y, size + t, t);
-            if (cell.walls[1]) addWall(x + size, y + size/2, t, size + t);
-            if (cell.walls[2]) addWall(x + size/2, y + size, size + t, t);
-            if (cell.walls[3]) addWall(x, y + size/2, t, size + t);
-        }));
-
-        setupEntities(ox + size/2, oy + size/2, ox + (cols-0.5)*size, oy + (rows-0.5)*size);
-    } else {
-        // Circular Maze (Simplified Concentric)
-        const rings = 5, rDist = 70;
-        for (let i = 1; i <= rings; i++) {
-            const r = i * rDist;
-            const segs = 12 + i * 4;
-            for (let j = 0; j < segs; j++) {
-                const angle = (j / segs) * Math.PI * 2;
-                if (Math.random() > 0.2) {
-                    const wall = Bodies.rectangle(cx + Math.cos(angle)*r, cy + Math.sin(angle)*r, 80, 10, { 
-                        isStatic: true, angle: angle + Math.PI/2, render: { fillStyle: COLORS.wall } 
-                    });
-                    Composite.add(mazeGroup, wall);
-                }
-            }
-        }
-        setupEntities(cx, cy - (rings-0.5)*rDist, cx, cy);
+        if (neighbors.length) {
+            const next = neighbors[Math.floor(Math.random() * neighbors.length)];
+            if (next.r < curr.r) { curr.walls[0] = false; next.walls[2] = false; }
+            else if (next.c > curr.c) { curr.walls[1] = false; next.walls[3] = false; }
+            else if (next.r > curr.r) { curr.walls[2] = false; next.walls[0] = false; }
+            else if (next.c < curr.c) { curr.walls[3] = false; next.walls[1] = false; }
+            stack.push(curr);
+            curr = next;
+            curr.visited = true;
+        } else if (stack.length) {
+            curr = stack.pop();
+        } else break;
     }
-    World.add(engine.world, mazeGroup);
+
+    // Force open the center goal paths
+    const mid = 5;
+    grid[mid][mid].walls = [false, false, false, false];
+
+    // Build Physics
+    const ox = cx - (cols * s) / 2;
+    const oy = cy - (rows * s) / 2;
+    const t = 10;
+
+    grid.forEach(row => row.forEach(cell => {
+        const x = ox + cell.c * s, y = oy + cell.r * s;
+        if (cell.walls[0]) addWall(x + s/2, y, s + t, t);
+        if (cell.walls[1]) addWall(x + s, y + s/2, t, s + t);
+        if (cell.walls[2]) addWall(x + s/2, y + s, s + t, t);
+        if (cell.walls[3]) addWall(x, y + s/2, t, s + t);
+    }));
+
+    // Entities
+    ball = Bodies.circle(ox + s/2, oy + s/2, 12, { 
+        restitution: 0.2, friction: 0.1, frictionAir: 0.02, density: 0.01,
+        render: { fillStyle: COLORS.ball }
+    });
+    
+    goal = Bodies.circle(cx, cy, 18, { 
+        isStatic: true, isSensor: true, 
+        render: { fillStyle: '#000', strokeStyle: COLORS.goal, lineWidth: 4 } 
+    });
+
+    World.add(engine.world, [mazeGroup, ball, goal]);
 }
 
 function addWall(x, y, w, h) {
-    const wall = Bodies.rectangle(x, y, w, h, { 
-        isStatic: true, render: { fillStyle: COLORS.wall }, friction: 0.5, restitution: 0.4 
-    });
-    Composite.add(mazeGroup, wall);
+    const wBody = Bodies.rectangle(x, y, w, h, { isStatic: true, render: { fillStyle: COLORS.wall }, friction: 0.3 });
+    Composite.add(mazeGroup, wBody);
 }
 
-function setupEntities(sx, sy, gx, gy) {
-    if (ball) World.remove(engine.world, ball);
-    ball = Bodies.circle(sx, sy, 15, { 
-        restitution: 0.5, friction: 0.1, frictionAir: 0.02, density: 0.002, 
-        render: { fillStyle: COLORS.ball } 
-    });
-
-    if (goal) World.remove(engine.world, goal);
-    goal = Bodies.circle(gx, gy, 20, { 
-        isStatic: true, isSensor: true, render: { fillStyle: '#000', strokeStyle: COLORS.goal, lineWidth: 4 } 
-    });
-
-    World.add(engine.world, [ball, goal]);
-}
-
-/** * RENDER LOOP & FX
+/** * MAIN LOOP
  */
-function loop() {
-    requestAnimationFrame(loop);
+function updateLoop() {
+    requestAnimationFrame(updateLoop);
+    if (isGameOver) return;
+
     const ctx = render.context;
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight / 2;
 
-    // Camera Shake
-    if (shake > 0.1) {
-        ctx.setTransform(1, 0, 0, 1, (Math.random()-0.5)*shake, (Math.random()-0.5)*shake);
-        shake *= 0.9;
-    } else ctx.setTransform(1, 0, 0, 1, 0, 0);
+    // 1. Maze Rotation
+    rotationAngle += 0.003;
+    Composite.allBodies(mazeGroup).forEach(b => {
+        const rel = Vector.sub(b.position, {x: cx, y: cy});
+        const dist = Vector.magnitude(rel);
+        const angle = Math.atan2(rel.y, rel.x) + 0.003;
+        Body.setPosition(b, { x: cx + Math.cos(angle)*dist, y: cy + Math.sin(angle)*dist });
+        Body.setAngle(b, b.angle + 0.003);
+    });
 
+    // 2. Keyboard Movement (Screen Relative)
+    const speed = 0.008;
+    if (keys['ArrowUp'] || keys['KeyW']) Body.applyForce(ball, ball.position, { x: 0, y: -speed });
+    if (keys['ArrowDown'] || keys['KeyS']) Body.applyForce(ball, ball.position, { x: 0, y: speed });
+    if (keys['ArrowLeft'] || keys['KeyA']) Body.applyForce(ball, ball.position, { x: -speed, y: 0 });
+    if (keys['ArrowRight'] || keys['KeyD']) Body.applyForce(ball, ball.position, { x: speed, y: 0 });
+
+    // 3. Parallax Background
+    document.getElementById('bg-parallax').style.transform = `translate(${ball.position.x * -0.04}px, ${ball.position.y * -0.04}px) rotate(${rotationAngle * 5}deg)`;
+
+    // 4. Custom Drawing (Glows)
     ctx.globalCompositeOperation = 'lighter';
+    const ballGlow = ctx.createRadialGradient(ball.position.x, ball.position.y, 0, ball.position.x, ball.position.y, 35);
+    ballGlow.addColorStop(0, 'rgba(47, 208, 255, 0.6)');
+    ballGlow.addColorStop(1, 'rgba(47, 208, 255, 0)');
+    ctx.fillStyle = ballGlow;
+    ctx.beginPath(); ctx.arc(ball.position.x, ball.position.y, 35, 0, Math.PI*2); ctx.fill();
 
-    // Draw Glows
-    flashes.forEach((f, i) => {
-        ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI*2);
-        ctx.fillStyle = `rgba(47, 208, 255, ${f.a})`; ctx.fill();
-        f.r += 2; f.a -= 0.05;
-        if (f.a <= 0) flashes.splice(i, 1);
-    });
-
-    particles.forEach((p, i) => {
-        p.x += p.vx; p.y += p.vy; p.life -= 0.02;
-        ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
-        ctx.fillStyle = `rgba(255, 122, 0, ${p.life})`; ctx.fill();
-        if (p.life <= 0) particles.splice(i, 1);
-    });
-
-    // Ball Bloom
-    const bG = ctx.createRadialGradient(ball.position.x, ball.position.y, 0, ball.position.x, ball.position.y, 40);
-    bG.addColorStop(0, 'rgba(47, 208, 255, 0.7)'); bG.addColorStop(1, 'rgba(47, 208, 255, 0)');
-    ctx.fillStyle = bG; ctx.beginPath(); ctx.arc(ball.position.x, ball.position.y, 40, 0, Math.PI*2); ctx.fill();
-
-    // Goal Black Hole (Inner Sink)
-    const gG = ctx.createRadialGradient(goal.position.x, goal.position.y, 5, goal.position.x, goal.position.y, 25);
-    gG.addColorStop(0, '#000'); gG.addColorStop(1, COLORS.goal);
-    ctx.fillStyle = gG; ctx.beginPath(); ctx.arc(goal.position.x, goal.position.y, 25, 0, Math.PI*2); ctx.fill();
-
+    // Goal Effect
+    const goalPulse = 20 + Math.sin(Date.now() * 0.005) * 5;
+    const goalGlow = ctx.createRadialGradient(goal.position.x, goal.position.y, 0, goal.position.x, goal.position.y, 40);
+    goalGlow.addColorStop(0, 'rgba(255, 122, 0, 0.4)');
+    goalGlow.addColorStop(1, 'rgba(255, 122, 0, 0)');
+    ctx.fillStyle = goalGlow;
+    ctx.beginPath(); ctx.arc(goal.position.x, goal.position.y, 40, 0, Math.PI*2); ctx.fill();
     ctx.globalCompositeOperation = 'source-over';
 
-    // Parallax
-    document.getElementById('bg-parallax').style.transform = `translate(${ball.position.x * -0.05}px, ${ball.position.y * -0.05}px)`;
-
-    // Check Win
-    if (Vector.magnitude(Vector.sub(ball.position, goal.position)) < 30) {
-        handleWin();
+    // 5. Success Check
+    if (Vector.magnitude(Vector.sub(ball.position, goal.position)) < 25) {
+        level++;
+        document.getElementById('lvl-val').innerText = level.toString().padStart(2, '0');
+        startLevel();
     }
 }
 
-function handleWin() {
-    if (shake > 15) return;
-    shake = 20;
-    for (let i = 0; i < 40; i++) particles.push({ x: goal.position.x, y: goal.position.y, vx: (Math.random()-0.5)*15, vy: (Math.random()-0.5)*15, life: 1, size: Math.random()*5 });
-    
-    // Reset Logic
-    Body.setPosition(ball, { x: -2000, y: -2000 });
-    level++;
-    document.getElementById('lvl-val').innerText = level.toString().padStart(2, '0');
-    setTimeout(buildLevel, 800);
-}
-
-function changeShape(s) {
-    currentShape = s;
-    buildLevel();
-}
-
-function resetGame() {
-    location.reload();
+function resetLevel() {
+    startLevel();
 }
 
 init();
